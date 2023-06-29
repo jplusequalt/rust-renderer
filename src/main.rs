@@ -8,8 +8,8 @@ use renderer::render_model;
 
 use crate::model::Model;
 
-const WIDTH: u32 = 1000;
-const HEIGHT: u32 = 1000;
+const WIDTH: u32 = 800;
+const HEIGHT: u32 = 800;
 
 fn main() {
     let mut img = RgbaImage::from_pixel(WIDTH, HEIGHT, Rgba([0, 0, 0, 255]));

@@ -1,8 +1,8 @@
 use std::mem::swap;
 
 use image::{Rgba, RgbaImage};
-use rand::random;
 use nalgebra::{SimdPartialOrd, Vector2, Vector3};
+use rand::random;
 
 use crate::model::Model;
 
@@ -78,27 +78,47 @@ pub fn draw_wireframe(obj: Model, img: &mut RgbaImage, c: Rgba<u8>, width: u32, 
 }
 
 pub fn render_model(obj: Model, img: &mut RgbaImage, width: u32, height: u32) {
+    let light_dir = Vector3::new(0.0, 0.0, -1.0);
+
     for i in 0..obj.num_faces() {
         let face = obj.face(i).unwrap();
         let mut screen_coords = Vec::new();
+        let mut world_coords = Vec::new();
         for j in 0..3 {
-            let world_coords = obj.vert(face[j] as usize).unwrap();
+            let v = obj.vert(face[j] as usize).unwrap();
             screen_coords.push(Vector2::new(
-                (world_coords.x + 1.0) * (width - 1) as f64 / 2.0,
-                (world_coords.y + 1.0) * (height - 1) as f64 / 2.0,
+                (v.x + 1.0) * (width - 1) as f64 / 2.0,
+                (v.y + 1.0) * (height - 1) as f64 / 2.0,
             ));
+            world_coords.push(v);
         }
-        triangle_from_verts(
-            &mut screen_coords.remove(0),
-            &mut screen_coords.remove(0),
-            &mut screen_coords.remove(0),
-            img,
-            Rgba([random::<u8>(), random::<u8>(), random::<u8>(), 255]),
-        );
+
+        // compute the normal
+        let mut n = (world_coords[2] - world_coords[0]).cross(&(world_coords[1] - world_coords[0]));
+        n.normalize_mut();
+
+        // the intensity of light on a tri for flat shading, is simply
+        // the dot product of the light vector and the tri's normal
+        let intensity = n.dot(&light_dir);
+        if intensity > 0.0 {
+            triangle_from_verts(
+                &mut screen_coords.remove(0),
+                &mut screen_coords.remove(0),
+                &mut screen_coords.remove(0),
+                img,
+                Rgba([
+                    (intensity * 255.0) as u8,
+                    (intensity * 255.0) as u8,
+                    (intensity * 255.0) as u8,
+                    255,
+                ]),
+            )
+        }
     }
 }
 
 pub fn barycentric(points: &Vec<Vector2<f64>>, p: &Vector2<f64>) -> Vector3<f64> {
+    // create two vectors from the sides of the tri
     let u = Vector3::new(
         points[2].x - points[0].x,
         points[1].x - points[0].x,
@@ -109,6 +129,8 @@ pub fn barycentric(points: &Vec<Vector2<f64>>, p: &Vector2<f64>) -> Vector3<f64>
         points[1].y - points[0].y,
         points[0].y - p.y,
     );
+
+    // compute the normal
     let n = u.cross(&v);
 
     // barycentric coords must all be > 0
@@ -194,7 +216,7 @@ pub fn triangle_from_verts(
         }
 
         for j in (a.x as u32)..=(b.x as u32) {
-            img.put_pixel(j as u32, (v0.y + i as f64) as u32, c);
+            img.put_pixel(j, (v0.y + i as f64) as u32, c);
         }
     }
 }
