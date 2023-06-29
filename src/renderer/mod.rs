@@ -1,7 +1,8 @@
 use std::mem::swap;
 
 use image::{Rgba, RgbaImage};
-use nalgebra::{Vector2, Vector3};
+use rand::random;
+use nalgebra::{SimdPartialOrd, Vector2, Vector3};
 
 use crate::model::Model;
 
@@ -76,7 +77,77 @@ pub fn draw_wireframe(obj: Model, img: &mut RgbaImage, c: Rgba<u8>, width: u32, 
     }
 }
 
-pub fn triangle(
+pub fn render_model(obj: Model, img: &mut RgbaImage, width: u32, height: u32) {
+    for i in 0..obj.num_faces() {
+        let face = obj.face(i).unwrap();
+        let mut screen_coords = Vec::new();
+        for j in 0..3 {
+            let world_coords = obj.vert(face[j] as usize).unwrap();
+            screen_coords.push(Vector2::new(
+                (world_coords.x + 1.0) * (width - 1) as f64 / 2.0,
+                (world_coords.y + 1.0) * (height - 1) as f64 / 2.0,
+            ));
+        }
+        triangle_from_verts(
+            &mut screen_coords.remove(0),
+            &mut screen_coords.remove(0),
+            &mut screen_coords.remove(0),
+            img,
+            Rgba([random::<u8>(), random::<u8>(), random::<u8>(), 255]),
+        );
+    }
+}
+
+pub fn barycentric(points: &Vec<Vector2<f64>>, p: &Vector2<f64>) -> Vector3<f64> {
+    let u = Vector3::new(
+        points[2].x - points[0].x,
+        points[1].x - points[0].x,
+        points[0].x - p.x,
+    );
+    let v = Vector3::new(
+        points[2].y - points[0].y,
+        points[1].y - points[0].y,
+        points[0].y - p.y,
+    );
+    let n = u.cross(&v);
+
+    // barycentric coords must all be > 0
+    // if abs(n.z) is close to zero, then the triangle is degenerate
+    // return a vec3 with negative coords
+    if f64::abs(n.z) < 0.001 {
+        return Vector3::new(-1.0, 1.0, 1.0);
+    }
+
+    Vector3::new(1f64 - (n.x + n.y) / n.z, n.y / n.z, n.x / n.z)
+}
+
+pub fn triangle_from_bbox(points: &mut Vec<Vector2<f64>>, img: &mut RgbaImage, c: Rgba<u8>) {
+    let mut bbox_min = Vector2::new(img.width() as f64 - 1.0, img.height() as f64 - 1.0);
+    let mut bbox_max = Vector2::new(0.0, 0.0);
+    let clamped_bbox = Vector2::new(img.width() as f64 - 1.0, img.height() as f64 - 1.0);
+
+    for i in 0..3 {
+        bbox_min.x = f64::max(0.0, f64::min(bbox_min.x, points[i].x));
+        bbox_min.y = f64::max(0.0, f64::min(bbox_min.y, points[i].y));
+
+        bbox_max.x = f64::min(clamped_bbox.x, f64::max(bbox_max.x, points[i].x));
+        bbox_max.y = f64::min(clamped_bbox.y, f64::max(bbox_max.y, points[i].y));
+    }
+
+    let mut p: Vector2<f64>;
+    for x in (bbox_min.x as i32)..=(bbox_max.x as i32) {
+        for y in (bbox_min.y as i32)..=(bbox_max.y as i32) {
+            p = Vector2::new(x as f64, y as f64);
+            let bc_screen = barycentric(points, &p);
+            if bc_screen.x < 0.0 || bc_screen.y < 0.0 || bc_screen.z < 0.0 {
+                continue;
+            }
+            img.put_pixel(p.x as u32, p.y as u32, c);
+        }
+    }
+}
+
+pub fn triangle_from_verts(
     v0: &mut Vector2<f64>,
     v1: &mut Vector2<f64>,
     v2: &mut Vector2<f64>,
@@ -106,11 +177,7 @@ pub fn triangle(
     for i in 0..(total_h as i32) {
         let upper_seg = (i > (v1.y - v0.y) as i32) || (v1.y == v0.y);
 
-        let segment_h = if upper_seg {
-            v2.y - v1.y
-        } else {
-            v1.y - v0.y
-        };
+        let segment_h = if upper_seg { v2.y - v1.y } else { v1.y - v0.y };
 
         let alpha = i as f64 / total_h as f64;
         let beta = (i as f64 - (if upper_seg { v1.y - v0.y } else { 0.0 })) / segment_h;
@@ -122,7 +189,7 @@ pub fn triangle(
             *v0 + (*v1 - *v0) * beta
         };
 
-        if a.x > b.x  {
+        if a.x > b.x {
             swap(&mut a, &mut b);
         }
 
