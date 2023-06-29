@@ -5,10 +5,10 @@ use std::{
     path::Path,
 };
 
-use crate::vector::vec3::Vec3;
+use nalgebra::Vector3;
 
 pub struct Model {
-    verts: Vec<Vec3>,
+    verts: Vec<Vector3<f64>>,
     faces: Vec<Vec<i32>>,
 }
 
@@ -17,7 +17,7 @@ impl Model {
         let file = File::open(filename)?;
         let content = BufReader::new(file);
 
-        let mut verts: Vec<Vec3> = Vec::new();
+        let mut verts: Vec<Vector3<f64>> = Vec::new();
         let mut faces: Vec<Vec<i32>> = Vec::new();
         content.lines().for_each(|line| {
             if let Ok(l) = line {
@@ -27,7 +27,7 @@ impl Model {
                         .filter_map(|s| s.parse::<f64>().ok())
                         .collect::<Vec<f64>>();
 
-                    verts.push(Vec3::from(split_verts[0], split_verts[1], split_verts[2]));
+                    verts.push(Vector3::new(split_verts[0], split_verts[1], split_verts[2]));
                 } else if l.starts_with("f ") {
                     let split_faces = l
                         .split(" ")
@@ -59,7 +59,7 @@ impl Model {
         self.faces.get(index)
     }
 
-    pub fn vert(&self, index: usize) -> Option<&Vec3> {
+    pub fn vert(&self, index: usize) -> Option<&Vector3<f64>> {
         self.verts.get(index)
     }
 }
