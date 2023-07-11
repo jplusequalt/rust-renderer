@@ -1,10 +1,9 @@
+#![allow(dead_code)]
 use std::mem::swap;
 
-use image::{Rgba, RgbaImage};
-use nalgebra::{SimdPartialOrd, Vector2, Vector3};
-use rand::random;
-
-use crate::model::Model;
+use image::{Pixel, Rgba, RgbaImage};
+use nalgebra::{Vector2, Vector3};
+use obj::{Obj, TexturedVertex};
 
 // fifth and final attempt
 pub fn line(v0: &mut Vector2<f64>, v1: &mut Vector2<f64>, img: &mut RgbaImage, c: Rgba<u8>) {
@@ -56,68 +55,7 @@ pub fn line(v0: &mut Vector2<f64>, v1: &mut Vector2<f64>, img: &mut RgbaImage, c
     }
 }
 
-pub fn draw_wireframe(obj: Model, img: &mut RgbaImage, c: Rgba<u8>, width: u32, height: u32) {
-    for i in 0..obj.num_faces() {
-        let face = obj.face(i).unwrap();
-        for j in 0..3 {
-            let v0 = obj.vert(face[j] as usize).unwrap();
-            let v1 = obj.vert(face[(j + 1) % 3] as usize).unwrap();
-
-            let mut u0 = Vector2::new(
-                ((v0.x + 1f64) * (width - 1) as f64) / 2.0,
-                ((v0.y + 1f64) * (height - 1) as f64) / 2.0,
-            );
-            let mut u1 = Vector2::new(
-                ((v1.x + 1f64) * (width - 1) as f64) / 2.0,
-                ((v1.y + 1f64) * (height - 1) as f64) / 2.0,
-            );
-
-            line(&mut u0, &mut u1, img, c);
-        }
-    }
-}
-
-pub fn render_model(obj: Model, img: &mut RgbaImage, width: u32, height: u32) {
-    let light_dir = Vector3::new(0.0, 0.0, -1.0);
-
-    for i in 0..obj.num_faces() {
-        let face = obj.face(i).unwrap();
-        let mut screen_coords = Vec::new();
-        let mut world_coords = Vec::new();
-        for j in 0..3 {
-            let v = obj.vert(face[j] as usize).unwrap();
-            screen_coords.push(Vector2::new(
-                (v.x + 1.0) * (width - 1) as f64 / 2.0,
-                (v.y + 1.0) * (height - 1) as f64 / 2.0,
-            ));
-            world_coords.push(v);
-        }
-
-        // compute the normal
-        let mut n = (world_coords[2] - world_coords[0]).cross(&(world_coords[1] - world_coords[0]));
-        n.normalize_mut();
-
-        // the intensity of light on a tri for flat shading, is simply
-        // the dot product of the light vector and the tri's normal
-        let intensity = n.dot(&light_dir);
-        if intensity > 0.0 {
-            triangle_from_verts(
-                &mut screen_coords.remove(0),
-                &mut screen_coords.remove(0),
-                &mut screen_coords.remove(0),
-                img,
-                Rgba([
-                    (intensity * 255.0) as u8,
-                    (intensity * 255.0) as u8,
-                    (intensity * 255.0) as u8,
-                    255,
-                ]),
-            )
-        }
-    }
-}
-
-pub fn barycentric(points: &Vec<Vector2<f64>>, p: &Vector2<f64>) -> Vector3<f64> {
+pub fn barycentric(points: &[Vector2<f32>; 3], p: &Vector3<f32>) -> Vector3<f32> {
     // create two vectors from the sides of the tri
     let u = Vector3::new(
         points[2].x - points[0].x,
@@ -136,35 +74,194 @@ pub fn barycentric(points: &Vec<Vector2<f64>>, p: &Vector2<f64>) -> Vector3<f64>
     // barycentric coords must all be > 0
     // if abs(n.z) is close to zero, then the triangle is degenerate
     // return a vec3 with negative coords
-    if f64::abs(n.z) < 0.001 {
+    if f32::abs(n.z) < 0.001 {
         return Vector3::new(-1.0, 1.0, 1.0);
     }
 
-    Vector3::new(1f64 - (n.x + n.y) / n.z, n.y / n.z, n.x / n.z)
+    Vector3::new(1.0 - (n.x + n.y) / n.z, n.y / n.z, n.x / n.z)
 }
 
-pub fn triangle_from_bbox(points: &mut Vec<Vector2<f64>>, img: &mut RgbaImage, c: Rgba<u8>) {
-    let mut bbox_min = Vector2::new(img.width() as f64 - 1.0, img.height() as f64 - 1.0);
-    let mut bbox_max = Vector2::new(0.0, 0.0);
-    let clamped_bbox = Vector2::new(img.width() as f64 - 1.0, img.height() as f64 - 1.0);
+pub fn face_world_to_screen(
+    obj: &Obj<TexturedVertex>,
+    face: &[u16],
+    width: f32,
+    height: f32,
+) -> [Vector2<i32>; 3] {
+    // v0, v1, v2 are the vertices of the triangle defined by this face in world space
+    let v0 = obj.vertices[face[0] as usize].position;
+    let v1 = obj.vertices[face[1] as usize].position;
+    let v2 = obj.vertices[face[2] as usize].position;
+
+    let p0 = Vector2::new(
+        ((v0[0] + 1.0) * width) as i32,
+        ((v0[1] + 1.0) * height) as i32,
+    );
+
+    let p1 = Vector2::new(
+        ((v1[0] + 1.0) * width) as i32,
+        ((v1[1] + 1.0) * height) as i32,
+    );
+
+    let p2 = Vector2::new(
+        ((v2[0] + 1.0) * width) as i32,
+        ((v2[1] + 1.0) * height) as i32,
+    );
+
+    [p0, p1, p2]
+}
+
+pub fn face_world_coords(obj: &Obj<TexturedVertex>, face: &[u16]) -> [Vector3<f32>; 3] {
+    // v0, v1, v2 are the vertices of the triangle defined by this face in world space
+    let v0 = obj.vertices[face[0] as usize].position;
+    let v1 = obj.vertices[face[1] as usize].position;
+    let v2 = obj.vertices[face[2] as usize].position;
+
+    let p0 = Vector3::new(v0[0], v0[1], v0[2]);
+    let p1 = Vector3::new(v1[0], v1[1], v1[2]);
+    let p2 = Vector3::new(v2[0], v2[1], v2[2]);
+
+    [p0, p1, p2]
+}
+
+fn face_uv_coords(
+    obj: &Obj<TexturedVertex>,
+    face: &[u16],
+    texture_width: f32,
+    texture_height: f32,
+) -> [Vector2<f32>; 3] {
+    // v0, v1, v2 are the texture coordinates at the vertices of the triangle
+    let v0 = obj.vertices[face[0] as usize].texture;
+    let v1 = obj.vertices[face[1] as usize].texture;
+    let v2 = obj.vertices[face[2] as usize].texture;
+
+    let t0 = Vector2::new(
+        (v0[0] * texture_width) - 1.0,
+        (v0[1] * texture_height) - 1.0,
+    );
+    let t1 = Vector2::new(
+        (v1[0] * texture_width) - 1.0,
+        (v1[1] * texture_height) - 1.0,
+    );
+    let t2 = Vector2::new(
+        (v2[0] * texture_width) - 1.0,
+        (v2[1] * texture_height) - 1.0,
+    );
+
+    [t0, t1, t2]
+}
+
+fn calc_light_intesity(world_coords: &[Vector3<f32>; 3], light_dir: &Vector3<f32>) -> f32 {
+    // calc normal from two edges of the triangle
+    let v0 = Vector3::from(world_coords[2] - world_coords[0]);
+    let v1 = Vector3::from(world_coords[1] - world_coords[0]);
+    let norm = v0.cross(&v1).normalize();
+
+    // light intensity is the dot product of the normal and light vector
+    norm.dot(&light_dir)
+}
+
+#[inline]
+fn edge_function(v0: &Vector2<i32>, v1: &Vector2<i32>, v2: &Vector2<i32>) -> i32 {
+    (v2.x - v0.x) * (v1.y - v0.y) - (v2.y - v0.y) * (v1.x - v0.x)
+}
+
+pub fn render(obj: &Obj<TexturedVertex>, img: &mut RgbaImage, texture: RgbaImage) {
+    // depth buffer
+    // indicates for each pixel, how far away that pixel is from the camera
+    let mut z_buffer = vec![f32::NEG_INFINITY; (img.width() * img.height()) as usize];
+
+    let faces = &obj.indices[..obj.indices.len()];
+    for face in faces.chunks(3) {
+        // fetch data for this tri
+        let screen_coords = face_world_to_screen(
+            obj,
+            face,
+            (img.width() - 1) as f32 / 2.0,
+            (img.height() - 1) as f32 / 2.0,
+        );
+        let world_coords = face_world_coords(obj, face);
+        let uv_coords = face_uv_coords(obj, face, texture.width() as f32, texture.height() as f32);
+
+        let light_dir = Vector3::new(0.0, 0.0, -1.0);
+        let intensity = calc_light_intesity(&world_coords, &light_dir);
+
+        if intensity > 0.0 {
+            draw_triangle_barycentric(
+                &screen_coords,
+                &world_coords,
+                &uv_coords,
+                &texture,
+                intensity,
+                &mut z_buffer,
+                img,
+            );
+        }
+    }
+}
+
+fn draw_triangle_barycentric(
+    screen_coords: &[Vector2<i32>; 3],
+    world_coords: &[Vector3<f32>; 3],
+    uv_coords: &[Vector2<f32>; 3],
+    texture: &RgbaImage,
+    light_intensity: f32,
+    z_buffer: &mut Vec<f32>,
+    img: &mut RgbaImage,
+) {
+    let mut bbox_min = Vector2::new(f32::MAX, f32::MAX);
+    let mut bbox_max = Vector2::new(f32::MIN, f32::MIN);
+    let clamped_bbox = Vector2::new(img.width() as f32 - 1.0, img.height() as f32 - 1.0);
 
     for i in 0..3 {
-        bbox_min.x = f64::max(0.0, f64::min(bbox_min.x, points[i].x));
-        bbox_min.y = f64::max(0.0, f64::min(bbox_min.y, points[i].y));
+        bbox_min.x = f32::max(0.0, f32::min(bbox_min.x, screen_coords[i].x as f32));
+        bbox_min.y = f32::max(0.0, f32::min(bbox_min.y, screen_coords[i].y as f32));
 
-        bbox_max.x = f64::min(clamped_bbox.x, f64::max(bbox_max.x, points[i].x));
-        bbox_max.y = f64::min(clamped_bbox.y, f64::max(bbox_max.y, points[i].y));
+        bbox_max.x = f32::min(
+            clamped_bbox.x,
+            f32::max(bbox_max.x, screen_coords[i].x as f32),
+        );
+        bbox_max.y = f32::min(
+            clamped_bbox.y,
+            f32::max(bbox_max.y, screen_coords[i].y as f32),
+        );
     }
 
-    let mut p: Vector2<f64>;
+    let area = edge_function(&screen_coords[0], &screen_coords[1], &screen_coords[2]) as f32;
+
+    // Calculate if point2 of the bounding box is inside triangle
     for x in (bbox_min.x as i32)..=(bbox_max.x as i32) {
         for y in (bbox_min.y as i32)..=(bbox_max.y as i32) {
-            p = Vector2::new(x as f64, y as f64);
-            let bc_screen = barycentric(points, &p);
-            if bc_screen.x < 0.0 || bc_screen.y < 0.0 || bc_screen.z < 0.0 {
-                continue;
+            let p = Vector2::new(x, y);
+
+            // check if pixel is in triangle
+            let mut w0 = edge_function(&screen_coords[1], &screen_coords[2], &p) as f32;
+            let mut w1 = edge_function(&screen_coords[2], &screen_coords[0], &p) as f32;
+            // Barycentric coordinates
+            w0 /= area;
+            w1 /= area;
+            let w2 = 1.0 - w0 - w1;
+
+            if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+                // interpolate z
+                let z_value =
+                    w0 * world_coords[0].z + w1 * world_coords[1].z + w2 * world_coords[2].z;
+
+                // check if distance to intersection is closer than value
+                // currently stored in the depth buffer
+                if z_buffer[(x + y * (img.width() as i32 - 1)) as usize] <= z_value {
+                    z_buffer[(x + y * (img.width() as i32 - 1)) as usize] = z_value;
+
+                    // interpolate texture coords
+                    let u = w0 * uv_coords[0].x + w1 * uv_coords[1].x + w2 * uv_coords[2].x;
+                    let v = w0 * uv_coords[0].y + w1 * uv_coords[1].y + w2 * uv_coords[2].y;
+
+                    // apply shading
+                    let mut uv = texture.get_pixel(u as u32, v as u32).to_rgba();
+                    uv.apply_without_alpha(|ch| ((ch as f32) * light_intensity) as u8);
+
+                    img.put_pixel(x as u32, y as u32, uv);
+                }
             }
-            img.put_pixel(p.x as u32, p.y as u32, c);
         }
     }
 }
