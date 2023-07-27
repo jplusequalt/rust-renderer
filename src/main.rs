@@ -1,30 +1,36 @@
 mod renderer;
 mod utils;
 
-use std::{fs::File, io::BufReader, path::Path};
-
+use anyhow::Result;
 use image::{imageops, Rgba, RgbaImage};
 use nalgebra::Vector3;
-use obj::{load_obj, Obj, TexturedVertex};
-use renderer::{render};
+use std::{path::Path, borrow::BorrowMut};
+
+use renderer::render;
+use utils::parse_model;
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 800;
 
 fn main() {
-    let mut img = RgbaImage::from_pixel(WIDTH, HEIGHT, Rgba([0, 0, 0, 255]));
+    match parse_model(
+        Path::new("assets/african_head"),
+        "african_head.obj",
+        "african_head_diffuse.tga",
+    ) {
+        Ok((model, texture)) => {
+            let mut img = RgbaImage::from_pixel(WIDTH, HEIGHT, Rgba([0, 0, 0, 255]));
 
-    let reader =
-        BufReader::new(File::open("obj/african_head/african_head.obj").expect("Error reading obj file!"));
-    let obj: Obj<TexturedVertex> = load_obj(reader).expect("Error parsing obj file!");
-    let mut texture = image::open(Path::new("obj/african_head/african_head_diffuse.tga"))
-        .expect("Error opening diffuse file!")
-        .into_rgba8();
+            let light_dir = Vector3::new(1., 1.0, 1.0).normalize();
+            let camera = Vector3::new(0.0, 0.0, 1.0);
+            let model_position = Vector3::new(0.0, 0.0, 0.0);
+            let up = Vector3::new(0.0, 1.0, 0.0);
 
-    imageops::flip_vertical_in_place(&mut texture);
+            render(&model, &mut img, texture, light_dir, camera, model_position, up);
 
-    render(&obj, &mut img, texture);
-
-    imageops::flip_vertical_in_place(&mut img);
-    img.save("result.png").unwrap();
+            imageops::flip_vertical_in_place(&mut img);
+            img.save("result.png").unwrap();
+        }
+        Err(e) => eprintln!("{e}")
+    }
 }

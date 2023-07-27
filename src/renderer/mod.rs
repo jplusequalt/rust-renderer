@@ -2,7 +2,7 @@
 use std::mem::swap;
 
 use image::{Pixel, Rgba, RgbaImage};
-use nalgebra::{Vector2, Vector3};
+use nalgebra::{Matrix4, Vector2, Vector3, Vector4};
 use obj::{Obj, TexturedVertex};
 
 // fifth and final attempt
@@ -81,33 +81,54 @@ pub fn barycentric(points: &[Vector2<f32>; 3], p: &Vector3<f32>) -> Vector3<f32>
     Vector3::new(1.0 - (n.x + n.y) / n.z, n.y / n.z, n.x / n.z)
 }
 
-pub fn face_world_to_screen(
-    obj: &Obj<TexturedVertex>,
-    face: &[u16],
-    width: f32,
-    height: f32,
-) -> [Vector2<i32>; 3] {
-    // v0, v1, v2 are the vertices of the triangle defined by this face in world space
-    let v0 = obj.vertices[face[0] as usize].position;
-    let v1 = obj.vertices[face[1] as usize].position;
-    let v2 = obj.vertices[face[2] as usize].position;
+fn viewport_matrix(width: u32, height: u32, depth: i32) -> Matrix4<f32> {
+    let mut m = Matrix4::<f32>::identity();
 
-    let p0 = Vector2::new(
-        ((v0[0] + 1.0) * width) as i32,
-        ((v0[1] + 1.0) * height) as i32,
-    );
+    m.m14 = width as f32 / 2.0;
+    m.m24 = height as f32 / 2.0;
+    m.m34 = depth as f32 / 2.0;
 
-    let p1 = Vector2::new(
-        ((v1[0] + 1.0) * width) as i32,
-        ((v1[1] + 1.0) * height) as i32,
-    );
+    m.m11 = width as f32 / 2.0;
+    m.m22 = height as f32 / 2.0;
+    m.m33 = depth as f32 / 2.0;
 
-    let p2 = Vector2::new(
-        ((v2[0] + 1.0) * width) as i32,
-        ((v2[1] + 1.0) * height) as i32,
-    );
+    m
+}
 
-    [p0, p1, p2]
+fn model_matrix(camera: Vector3<f32>, target: Vector3<f32>, up: Vector3<f32>) -> Matrix4<f32> {
+    let v = (camera - target).normalize();
+    let r = up.cross(&v).normalize();
+    let u = v.cross(&r).normalize();
+
+    // translate the camera to the origin
+    let mut translation = Matrix4::identity();
+    translation.m14 = -camera.x;
+    translation.m24 = -camera.y;
+    translation.m34 = -camera.z;
+
+    // orient camera to look down negative z-axis
+    let mut rotation = Matrix4::<f32>::identity();
+
+    rotation.m11 = r.x;
+    rotation.m12 = r.y;
+    rotation.m13 = r.z;
+
+    rotation.m21 = u.x;
+    rotation.m22 = u.y;
+    rotation.m23 = u.z;
+
+    rotation.m31 = v.x;
+    rotation.m32 = v.y;
+    rotation.m33 = v.z;
+
+    rotation * translation
+}
+
+fn projection_matrix(d: f32) -> Matrix4<f32> {
+    let mut projection = Matrix4::<f32>::identity();
+    projection.m43 = -1.0 / d;
+
+    projection
 }
 
 pub fn face_world_coords(obj: &Obj<TexturedVertex>, face: &[u16]) -> [Vector3<f32>; 3] {
@@ -150,6 +171,14 @@ fn face_uv_coords(
     [t0, t1, t2]
 }
 
+fn face_normal_coords(obj: &Obj<TexturedVertex>, face: &[u16]) -> [Vector3<f32>; 3] {
+    let n0 = Vector3::from(obj.vertices[face[0] as usize].normal);
+    let n1 = Vector3::from(obj.vertices[face[1] as usize].normal);
+    let n2 = Vector3::from(obj.vertices[face[2] as usize].normal);
+
+    [n0, n1, n2]
+}
+
 fn calc_light_intesity(world_coords: &[Vector3<f32>; 3], light_dir: &Vector3<f32>) -> f32 {
     // calc normal from two edges of the triangle
     let v0 = Vector3::from(world_coords[2] - world_coords[0]);
@@ -161,50 +190,89 @@ fn calc_light_intesity(world_coords: &[Vector3<f32>; 3], light_dir: &Vector3<f32
 }
 
 #[inline]
-fn edge_function(v0: &Vector2<i32>, v1: &Vector2<i32>, v2: &Vector2<i32>) -> i32 {
+fn edge_function(v0: &Vector3<f32>, v1: &Vector3<f32>, v2: &Vector3<f32>) -> f32 {
     (v2.x - v0.x) * (v1.y - v0.y) - (v2.y - v0.y) * (v1.x - v0.x)
 }
 
-pub fn render(obj: &Obj<TexturedVertex>, img: &mut RgbaImage, texture: RgbaImage) {
+fn project_to_screen(
+    obj: &Obj<TexturedVertex>,
+    face: &[u16],
+    viewport_mat: &Matrix4<f32>,
+    projection_mat: &Matrix4<f32>,
+    model_mat: &Matrix4<f32>,
+) -> [Vector3<f32>; 3] {
+    // v0, v1, v2 are the vertices of the triangle defined by this face in world space
+    let v0 = Vector3::from(obj.vertices[face[0] as usize].position);
+    let v1 = Vector3::from(obj.vertices[face[1] as usize].position);
+    let v2 = Vector3::from(obj.vertices[face[2] as usize].position);
+
+    // convert 3d point into homogenous coordinates
+    let h1 = Vector4::new(v0.x, v0.y, v0.z, 1.0);
+    let h2 = Vector4::new(v1.x, v1.y, v1.z, 1.0);
+    let h3 = Vector4::new(v2.x, v2.y, v2.z, 1.0);
+
+    // project the point
+    let m1 = viewport_mat * projection_mat * model_mat * h1;
+    let m2 = viewport_mat * projection_mat * model_mat * h2;
+    let m3 = viewport_mat * projection_mat * model_mat * h3;
+
+    // perspective divide
+    [
+        Vector3::new(m1.x / m1.w, m1.y / m1.w, m1.z / m1.w),
+        Vector3::new(m2.x / m2.w, m2.y / m2.w, m2.z / m2.w),
+        Vector3::new(m3.x / m3.w, m3.y / m3.w, m3.z / m3.w),
+    ]
+}
+
+pub fn render(
+    obj: &Obj<TexturedVertex>,
+    img: &mut RgbaImage,
+    texture: RgbaImage,
+    light_dir: Vector3<f32>,
+    camera: Vector3<f32>,
+    model_position: Vector3<f32>,
+    up: Vector3<f32>,
+) {
     // depth buffer
     // indicates for each pixel, how far away that pixel is from the camera
     let mut z_buffer = vec![f32::NEG_INFINITY; (img.width() * img.height()) as usize];
 
+    let model = model_matrix(camera, model_position, up);
+
+    let viewport = viewport_matrix(img.width() - 1, img.height() - 1, 255);
+
+    let projection = projection_matrix((camera - model_position).norm());
+
     let faces = &obj.indices[..obj.indices.len()];
     for face in faces.chunks(3) {
         // fetch data for this tri
-        let screen_coords = face_world_to_screen(
-            obj,
-            face,
-            (img.width() - 1) as f32 / 2.0,
-            (img.height() - 1) as f32 / 2.0,
-        );
+        let screen_coords = project_to_screen(obj, face, &viewport, &projection, &model);
+
         let world_coords = face_world_coords(obj, face);
         let uv_coords = face_uv_coords(obj, face, texture.width() as f32, texture.height() as f32);
 
-        let light_dir = Vector3::new(0.0, 0.0, -1.0);
-        let intensity = calc_light_intesity(&world_coords, &light_dir);
+        let normal_coords = face_normal_coords(obj, face);
 
-        if intensity > 0.0 {
-            draw_triangle_barycentric(
-                &screen_coords,
-                &world_coords,
-                &uv_coords,
-                &texture,
-                intensity,
-                &mut z_buffer,
-                img,
-            );
-        }
+        draw_triangle_barycentric(
+            &screen_coords,
+            &world_coords,
+            &uv_coords,
+            &texture,
+            &normal_coords,
+            &light_dir,
+            &mut z_buffer,
+            img,
+        );
     }
 }
 
 fn draw_triangle_barycentric(
-    screen_coords: &[Vector2<i32>; 3],
+    screen_coords: &[Vector3<f32>; 3],
     world_coords: &[Vector3<f32>; 3],
     uv_coords: &[Vector2<f32>; 3],
     texture: &RgbaImage,
-    light_intensity: f32,
+    normal_coords: &[Vector3<f32>; 3],
+    light_dir: &Vector3<f32>,
     z_buffer: &mut Vec<f32>,
     img: &mut RgbaImage,
 ) {
@@ -231,7 +299,7 @@ fn draw_triangle_barycentric(
     // Calculate if point2 of the bounding box is inside triangle
     for x in (bbox_min.x as i32)..=(bbox_max.x as i32) {
         for y in (bbox_min.y as i32)..=(bbox_max.y as i32) {
-            let p = Vector2::new(x, y);
+            let p = Vector3::new(x as f32, y as f32, 0.0);
 
             // check if pixel is in triangle
             let mut w0 = edge_function(&screen_coords[1], &screen_coords[2], &p) as f32;
@@ -245,6 +313,9 @@ fn draw_triangle_barycentric(
                 // interpolate z
                 let z_value =
                     w0 * world_coords[0].z + w1 * world_coords[1].z + w2 * world_coords[2].z;
+
+                let normal = normal_coords[0] * w0 + normal_coords[1] * w1 + normal_coords[2] * w2;
+                let light_intensity = normal.dot(&light_dir);
 
                 // check if distance to intersection is closer than value
                 // currently stored in the depth buffer
