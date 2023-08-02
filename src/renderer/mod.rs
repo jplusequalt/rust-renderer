@@ -5,6 +5,20 @@ use image::{Pixel, Rgba, RgbaImage};
 use nalgebra::{Matrix4, Vector2, Vector3, Vector4};
 use obj::{Obj, TexturedVertex};
 
+pub enum FitResolutionGate {
+    Fill,
+    Overscan,
+}
+
+pub struct Canvas {
+    t: f32,
+    r: f32,
+    b: f32,
+    l: f32,
+}
+
+const INCH_TO_MM: f32 = 25.4;
+
 // fifth and final attempt
 pub fn line(v0: &mut Vector2<f64>, v1: &mut Vector2<f64>, img: &mut RgbaImage, c: Rgba<u8>) {
     let (mut x0, mut y0) = (v0.x as i32, v0.y as i32);
@@ -124,9 +138,18 @@ fn model_matrix(camera: Vector3<f32>, target: Vector3<f32>, up: Vector3<f32>) ->
     rotation * translation
 }
 
-fn projection_matrix(d: f32) -> Matrix4<f32> {
-    let mut projection = Matrix4::<f32>::identity();
-    projection.m43 = -1.0 / d;
+fn projection_matrix(near_plane: f32, far_plane: f32, canvas: &Canvas) -> Matrix4<f32> {
+    let mut projection = Matrix4::<f32>::zeros();
+
+    projection.m11 = 2.0 * near_plane / (canvas.r - canvas.l);
+    projection.m22 = 2.0 * near_plane / (canvas.t - canvas.b);
+    projection.m33 = -(far_plane + near_plane) / (far_plane - near_plane);
+
+    projection.m13 = (canvas.r + canvas.l) / (canvas.r - canvas.l);
+    projection.m23 = (canvas.t + canvas.b) / (canvas.t - canvas.b);
+    projection.m43 = -1.0;
+
+    projection.m34 = -(2.0 * far_plane * near_plane) / (far_plane - near_plane);
 
     projection
 }
@@ -224,6 +247,50 @@ fn project_to_screen(
     ]
 }
 
+fn get_canvas_coords(
+    aperture_width: f32,
+    aperture_height: f32,
+    img_width: u32,
+    img_height: u32,
+    fit_film: FitResolutionGate,
+    focal_length: f32,
+    near_plane: f32,
+) -> Canvas {
+    let aspect_ratio = aperture_width / aperture_height;
+    let device_aspect_ratio = (img_width / img_height) as f32;
+
+    let mut t = ((aperture_height * INCH_TO_MM / 2.0) / focal_length) * near_plane;
+    let mut r = ((aperture_width * INCH_TO_MM / 2.0) / focal_length) * near_plane;
+
+    let mut x_scale = 1.0;
+    let mut y_scale = 1.0;
+
+    match fit_film {
+        FitResolutionGate::Fill => {
+            if aspect_ratio > device_aspect_ratio {
+                x_scale = device_aspect_ratio / aspect_ratio;
+            } else {
+                y_scale = aspect_ratio / device_aspect_ratio;
+            }
+        }
+        FitResolutionGate::Overscan => {
+            if aspect_ratio > device_aspect_ratio {
+                y_scale = aspect_ratio / device_aspect_ratio;
+            } else {
+                x_scale = device_aspect_ratio / aspect_ratio;
+            }
+        }
+    }
+
+    r *= x_scale;
+    t *= y_scale;
+
+    let b = -t;
+    let l = -r;
+
+    Canvas { t, r, b, l }
+}
+
 pub fn render(
     obj: &Obj<TexturedVertex>,
     img: &mut RgbaImage,
@@ -241,7 +308,20 @@ pub fn render(
 
     let viewport = viewport_matrix(img.width() - 1, img.height() - 1, 255);
 
-    let projection = projection_matrix((camera - model_position).norm());
+    let near_plane = 1.0;
+    let far_plane = 1000.0;
+
+    let canvas = get_canvas_coords(
+        0.980,
+        0.735,
+        img.width(),
+        img.height(),
+        FitResolutionGate::Overscan,
+        20.0,
+        near_plane,
+    );
+
+    let projection = projection_matrix(1.0, far_plane, &canvas);
 
     let faces = &obj.indices[..obj.indices.len()];
     for face in faces.chunks(3) {
